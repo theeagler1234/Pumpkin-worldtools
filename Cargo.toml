@@ -1,0 +1,18 @@
+[package]
+name = "pumpkin-worldtools"
+version = "0.1.0"
+edition = "2024"
+description = "A basic WorldEdit + WorldGuard style plugin for Pumpkin"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# This is the api crate that makes creating plugins easier, and has wit definitions
+pumpkin-plugin-api = "0.2.1+26.3-26.51"
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = true
