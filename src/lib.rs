@@ -1,5 +1,6 @@
 mod edit;
 mod guard;
+mod pattern;
 mod selection;
 mod util;
 
@@ -34,7 +35,7 @@ impl Plugin for WorldToolsPlugin {
 
     fn on_load(&self, context: Context) -> pumpkin_plugin_api::Result<()> {
         for (node, description, level) in [
-            (edit_node(), "Use /we selection and edit commands", PermissionLevel::Two),
+            (guard::EDIT_PERMISSION, "Use //selection and edit commands", PermissionLevel::Two),
             (GUARD_PERMISSION, "Manage protected regions with /wg", PermissionLevel::Three),
             (guard::BYPASS_PERMISSION, "Ignore region protection", PermissionLevel::Three),
         ] {
@@ -46,7 +47,9 @@ impl Plugin for WorldToolsPlugin {
             })?;
         }
 
-        context.register_command(edit::command(), guard::EDIT_PERMISSION);
+        for command in edit::commands() {
+            context.register_command(command, guard::EDIT_PERMISSION);
+        }
         context.register_command(guard::command(), GUARD_PERMISSION);
 
         context.register_event_handler(guard::BreakGuard, EventPriority::High, true)?;
@@ -64,10 +67,6 @@ impl Plugin for WorldToolsPlugin {
         info!("worldtools unloaded");
         Ok(())
     }
-}
-
-fn edit_node() -> &'static str {
-    guard::EDIT_PERMISSION
 }
 
 pumpkin_plugin_api::register_plugin!(WorldToolsPlugin);

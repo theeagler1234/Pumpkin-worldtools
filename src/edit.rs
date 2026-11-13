@@ -3,7 +3,7 @@
 use pumpkin_plugin_api::{
     Player, Server, World,
     command::{
-        ArgumentType, Command, CommandError, CommandNode, CommandSender, ConsumedArgs,
+        ArgumentType, Command, CommandError, CommandNode, CommandSender, ConsumedArgs, StringType,
     },
     commands::CommandHandler,
     common::BlockPos,
@@ -11,9 +11,9 @@ use pumpkin_plugin_api::{
 };
 
 use crate::{
+    pattern::{self, Mask, Pattern, lookup_block},
     selection::{self, Clipboard, UndoEntry},
-    util::{P, arg_text, cuboid, err, feet_block, player_key, player_of, resolve_block_id,
-        resolve_state, say, volume},
+    util::{P, arg_text, cuboid, err, feet_block, player_key, player_of, say, volume},
 };
 
 /// Largest number of blocks a single operation may touch.
@@ -23,30 +23,55 @@ const MAX_UNDO: usize = 20;
 
 pub const WAND_ITEM: &str = "minecraft:wooden_axe";
 
-pub fn command() -> Command {
-    let names = ["we".to_string(), "worldedit".to_string()];
-    Command::new(&names, "Basic WorldEdit commands")
+fn names(list: &[&str]) -> Vec<String> {
+    list.iter().map(|name| name.to_string()).collect()
+}
+
+/// Every command this module provides: the `/we ...` tree plus the classic `//...` forms.
+pub fn commands() -> Vec<Command> {
+    let word = ArgumentType::String(StringType::SingleWord);
+    let greedy = ArgumentType::String(StringType::Greedy);
+
+    let we = Command::new(&names(&["we", "worldedit"]), "Basic WorldEdit commands")
         .then(CommandNode::literal("pos1").execute(SetPoint(1)))
         .then(CommandNode::literal("pos2").execute(SetPoint(2)))
         .then(CommandNode::literal("wand").execute(Wand))
         .then(CommandNode::literal("clear").execute(ClearSelection))
         .then(CommandNode::literal("size").execute(Size))
         .then(
-            CommandNode::literal("set").then(
-                CommandNode::argument("block", &ArgumentType::BlockState).execute(SetBlocks),
-            ),
+            CommandNode::literal("set")
+                .then(CommandNode::argument("pattern", &greedy).execute(SetBlocks)),
         )
         .then(
             CommandNode::literal("replace").then(
-                CommandNode::argument("from", &ArgumentType::BlockState).then(
-                    CommandNode::argument("to", &ArgumentType::BlockState)
-                        .execute(ReplaceBlocks),
-                ),
+                CommandNode::argument("from", &word)
+                    .execute(ReplaceAll)
+                    .then(CommandNode::argument("to", &greedy).execute(ReplaceBlocks)),
             ),
         )
         .then(CommandNode::literal("copy").execute(Copy))
         .then(CommandNode::literal("paste").execute(Paste))
-        .then(CommandNode::literal("undo").execute(Undo))
+        .then(CommandNode::literal("undo").execute(Undo));
+
+    vec![
+        we,
+        Command::new(&names(&["/pos1"]), "Set position 1 at your feet").execute(SetPoint(1)),
+        Command::new(&names(&["/pos2"]), "Set position 2 at your feet").execute(SetPoint(2)),
+        Command::new(&names(&["/wand"]), "How to use the selection wand").execute(Wand),
+        Command::new(&names(&["/sel", "/desel"]), "Clear your selection")
+            .execute(ClearSelection),
+        Command::new(&names(&["/size"]), "Show your selection size").execute(Size),
+        Command::new(&names(&["/set"]), "Fill the selection with a block pattern")
+            .then(CommandNode::argument("pattern", &greedy).execute(SetBlocks)),
+        Command::new(&names(&["/replace", "/re"]), "Replace blocks in the selection").then(
+            CommandNode::argument("from", &word)
+                .execute(ReplaceAll)
+                .then(CommandNode::argument("to", &greedy).execute(ReplaceBlocks)),
+        ),
+        Command::new(&names(&["/copy"]), "Copy the selection").execute(Copy),
+        Command::new(&names(&["/paste"]), "Paste your clipboard at your feet").execute(Paste),
+        Command::new(&names(&["/undo"]), "Undo your last edit").execute(Undo),
+    ]
 }
 
 /// The player's validated selection: (world name, min, max).
@@ -185,13 +210,14 @@ impl CommandHandler for SetBlocks {
     ) -> Result<i32, CommandError> {
         let player = player_of(&sender)?;
         let (world_name, min, max) = selection_for(&player)?;
-        let state = resolve_state(&arg_text(&args, "block")?)?;
+        let pattern = Pattern::parse(&arg_text(&args, "pattern")?)?;
+        let salt = pattern::next_salt();
         let world = player.get_world();
         let changed = apply(
             &player_key(&player),
             &world,
             &world_name,
-            cuboid(min, max).map(|pos| (pos, state)),
+            cuboid(min, max).map(|pos| (pos, pattern.pick(pos, salt))),
         );
         say(&sender, &format!("{changed} block(s) changed."));
         Ok(changed as i32)
@@ -208,21 +234,51 @@ impl CommandHandler for ReplaceBlocks {
     ) -> Result<i32, CommandError> {
         let player = player_of(&sender)?;
         let (world_name, min, max) = selection_for(&player)?;
-        let from_id = resolve_block_id(&arg_text(&args, "from")?)?;
-        let to_state = resolve_state(&arg_text(&args, "to")?)?;
-        let world = player.get_world();
-        let matches: Vec<P> = cuboid(min, max)
-            .filter(|pos| world.get_block(block_pos(*pos)).id == from_id)
-            .collect();
-        let changed = apply(
-            &player_key(&player),
-            &world,
-            &world_name,
-            matches.into_iter().map(|pos| (pos, to_state)),
-        );
-        say(&sender, &format!("{changed} block(s) replaced."));
-        Ok(changed as i32)
+        let mask = Mask::parse(&arg_text(&args, "from")?)?;
+        let pattern = Pattern::parse(&arg_text(&args, "to")?)?;
+        replace_matching(&sender, &player, &world_name, min, max, |id| mask.matches(id), &pattern)
     }
+}
+
+/// `//replace <to>`: replaces every non-air block in the selection.
+struct ReplaceAll;
+impl CommandHandler for ReplaceAll {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        _server: Server,
+        args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let player = player_of(&sender)?;
+        let (world_name, min, max) = selection_for(&player)?;
+        let pattern = Pattern::parse(&arg_text(&args, "from")?)?;
+        let air = lookup_block("air")?.id;
+        replace_matching(&sender, &player, &world_name, min, max, |id| id != air, &pattern)
+    }
+}
+
+fn replace_matching(
+    sender: &CommandSender,
+    player: &Player,
+    world_name: &str,
+    min: P,
+    max: P,
+    matches: impl Fn(u16) -> bool,
+    pattern: &Pattern,
+) -> Result<i32, CommandError> {
+    let salt = pattern::next_salt();
+    let world = player.get_world();
+    let targets: Vec<P> = cuboid(min, max)
+        .filter(|pos| matches(world.get_block(block_pos(*pos)).id))
+        .collect();
+    let changed = apply(
+        &player_key(player),
+        &world,
+        world_name,
+        targets.into_iter().map(|pos| (pos, pattern.pick(pos, salt))),
+    );
+    say(sender, &format!("{changed} block(s) replaced."));
+    Ok(changed as i32)
 }
 
 struct Copy;

@@ -1,5 +1,5 @@
 use pumpkin_plugin_api::{
-    Block, BlockTypeExt, Player,
+    Player,
     command::{Arg, CommandError, CommandSender, ConsumedArgs},
     text::TextComponent,
 };
@@ -30,21 +30,6 @@ pub fn arg_text(args: &ConsumedArgs, key: &str) -> Result<String, CommandError> 
         | Arg::BlockPredicate(value) => Ok(value),
         _ => Err(err("A text argument was expected.")),
     }
-}
-
-/// Resolves a block name like `stone` or `minecraft:oak_planks` to its default state id.
-/// Block state properties (`[facing=north]`) are ignored; the default state is used.
-pub fn resolve_state(name: &str) -> Result<u16, CommandError> {
-    let base = name.split('[').next().unwrap_or(name).trim();
-    let block = Block::of(base).ok_or_else(|| err(&format!("Unknown block '{base}'.")))?;
-    Ok(block.get_default_state().id)
-}
-
-/// Resolves a block name to its block id (any state of that block matches).
-pub fn resolve_block_id(name: &str) -> Result<u16, CommandError> {
-    let base = name.split('[').next().unwrap_or(name).trim();
-    let block = Block::of(base).ok_or_else(|| err(&format!("Unknown block '{base}'.")))?;
-    Ok(block.id)
 }
 
 /// Iterates every position in the inclusive cuboid between `min` and `max`.
